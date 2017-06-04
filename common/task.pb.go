@@ -6,12 +6,14 @@ Package common is a generated protocol buffer package.
 
 It is generated from these files:
 	task.proto
+	user.proto
 
 It has these top-level messages:
 	Snapshot
 	History
 	Priority
 	Task
+	User
 */
 package common
 
