@@ -1,0 +1,88 @@
+syntax = "proto2";
+package common;
+
+import "google/protobuf/timestamp.proto";
+
+// Type of task. This should only be framework recognized type. For
+// example, a REMINDER type task could be pushed to user. Examples
+// that should not be put here is NEWS, SHOPPING etc.
+enum Type {
+	// REMINDER task could be queired by reminder and pushed to
+	// users. A reminder task must has reminding time.
+	REMINDER = 0;
+	// REPEATED task contains information of how to repeat a task
+	// based on different task state.
+	REPEATED = 1;
+}
+
+// State of task.
+enum State {
+	// A task has just been created. Initial state of a task.
+	CREATED = 0;
+
+	// A task has been dispatched to user and user is working on
+	// this task.
+	WORK_IN_PROGRESS = 1;
+
+	// A task has been dispatched to user but user reject to work
+	// on this task.
+	REJECTED = 2;
+
+	// A task has been dispatched to user, user worked on this task
+	// but is now blocked and cannot continue working on this task.
+	BLOCKED = 3;
+
+	// A task has been canceled by user.
+	CANCELED = 4;
+
+	// A task has been delayed by user.
+	DELAYED = 5;
+
+	// A task has been pending too long and is considered as
+	// expired.
+	EXPIRED = 6;
+}
+
+message Snapshot {
+	// Same as id in task.
+	optional string id = 1;
+	// The time when this snapshot is took.
+	optional google.protobuf.Timestamp time = 2;
+	// The state when this snapshot is took.
+	optional  State state = 3;
+	// The reason that transite to this state.
+	optional  string reason = 4;
+}
+
+message History {
+	repeated Snapshot snapshot = 1;
+}
+
+message Priority {
+	optional  int64 priority = 1;
+}
+
+message Task {
+	// Id has format: ServerIP:ProcessID:Timestamp, where timestamp has
+	// millisecond resolution.
+	optional  string id = 1;
+
+	// A task could contain multiple types. For example, a task could be
+	// a repeated reminder task.
+	repeated Type type = 2;
+
+	// History of all task snapshots.
+	optional  History history = 7;
+
+	// When the task is created.
+	optional  google.protobuf.Timestamp creation_time = 4;
+
+	// Most recent time the task is modified.
+	optional  google.protobuf.Timestamp last_modified_time = 5;
+
+	// Priority of the task. Used to compare with other tasks to decide
+	// what task to do next.
+	optional  Priority priority = 6;
+
+	extensions 10000 to max;
+}
