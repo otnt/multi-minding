@@ -1,5 +1,5 @@
 syntax = "proto2";
-package common;
+package proto;
 
 message User {
     optional int64 id = 1;
