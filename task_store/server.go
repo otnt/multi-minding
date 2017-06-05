@@ -3,6 +3,10 @@ package taskstore
 import (
 	commonpb "github.com/otnt/multi-minding/common/proto"
 
+	"log"
+
+	"sync"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 )
@@ -44,11 +48,14 @@ type (
 	InMemoryTaskStore struct {
 		// Map of user id to all tasks for this user.
 		userIDToTasksMap map[int64]taskIDToTaskMap
+
+		// Protect multi-thread map read/write.
+		lock sync.RWMutex
 	}
 )
 
 // Commit update/delete tasks in "commitGroup" for "user" to in memory storage.
-func (taskStore InMemoryTaskStore) Commit(user *commonpb.User, commitGroup *CommitGroup) error {
+func (taskStore *InMemoryTaskStore) Commit(user *commonpb.User, commitGroup *CommitGroup) error {
 	if err := assertUserIDExists(user); err != nil {
 		return err
 	}
@@ -62,41 +69,60 @@ func (taskStore InMemoryTaskStore) Commit(user *commonpb.User, commitGroup *Comm
 		return err
 	}
 
+	taskStore.lock.Lock()
+	defer taskStore.lock.Unlock()
+
+	if err := assertDeleteTasksExist(taskStore.userIDToTasksMap, user, commitGroup.deleteTasks); err != nil {
+		return err
+	}
+
 	taskStore.createUserIfNotPresent(user.GetId())
 
 	taskStore.upsertTasks(user.GetId(), commitGroup.upsertTasks)
 
+	taskStore.deleteTasks(user.GetId(), commitGroup.deleteTasks)
+
 	return nil
 }
 
-func (taskStore InMemoryTaskStore) createUserIfNotPresent(userID int64) {
+func (taskStore *InMemoryTaskStore) createUserIfNotPresent(userID int64) {
 	if _, ok := taskStore.userIDToTasksMap[userID]; !ok {
 		taskStore.userIDToTasksMap[userID] = make(map[string]*commonpb.Task)
 	}
 }
 
-func (taskStore InMemoryTaskStore) upsertTasks(userID int64, upsertTasks []*commonpb.Task) {
+func (taskStore *InMemoryTaskStore) upsertTasks(userID int64, upsertTasks []*commonpb.Task) {
 	taskMap := taskStore.userIDToTasksMap[userID]
 	for _, upsertTask := range upsertTasks {
 		taskMap[upsertTask.GetId()] = upsertTask
 	}
 }
 
+func (taskStore *InMemoryTaskStore) deleteTasks(userID int64, deleteTasks []*commonpb.Task) {
+	taskMap := taskStore.userIDToTasksMap[userID]
+	for _, deleteTask := range deleteTasks {
+		delete(taskMap, deleteTask.GetId())
+	}
+}
+
 // Query all tasks for the given "user" from in memory storage. If user does not exist,
 // return empty slice.
-func (taskStore InMemoryTaskStore) Query(user *commonpb.User) ([]*commonpb.Task, error) {
+func (taskStore *InMemoryTaskStore) Query(user *commonpb.User) ([]commonpb.Task, error) {
 	if err := assertUserIDExists(user); err != nil {
 		return nil, err
 	}
 
+	taskStore.lock.RLock()
+	defer taskStore.lock.RUnlock()
+
 	taskMap, ok := taskStore.userIDToTasksMap[user.GetId()]
 	if !ok {
-		return []*commonpb.Task{}, nil
+		return []commonpb.Task{}, nil
 	}
 
-	tasks := make([]*commonpb.Task, 0)
+	tasks := make([]commonpb.Task, 0)
 	for _, task := range taskMap {
-		tasks = append(tasks, task)
+		tasks = append(tasks, *task)
 	}
 	return tasks, nil
 }
@@ -104,6 +130,25 @@ func (taskStore InMemoryTaskStore) Query(user *commonpb.User) ([]*commonpb.Task,
 // MakeInMemoryTaskStore creates a new InMemoryTaskStore.
 func MakeInMemoryTaskStore() *InMemoryTaskStore {
 	return &InMemoryTaskStore{userIDToTasksMap: make(map[int64]taskIDToTaskMap)}
+}
+
+// Only for testing.
+
+// WithTasks add "tasks" to task store for "user". "user" must be absent from task store.
+func (taskStore *InMemoryTaskStore) WithTasks(user *commonpb.User, tasks []*commonpb.Task) *InMemoryTaskStore {
+	if err := assertUserIDExists(user); err != nil {
+		log.Fatal(err)
+	}
+	if err := assertTasksIDsExist(tasks); err != nil {
+		log.Fatal(err)
+	}
+	if _, ok := taskStore.userIDToTasksMap[user.GetId()]; ok {
+		log.Fatalf("User %+v already exist.", user)
+	}
+
+	taskStore.createUserIfNotPresent(user.GetId())
+	taskStore.upsertTasks(user.GetId(), tasks)
+	return taskStore
 }
 
 // Internal helper functions.
@@ -140,5 +185,22 @@ func assertTasksIDsUnique(first []*commonpb.Task, others ...[]*commonpb.Task) er
 		}
 	}
 
+	return nil
+}
+
+func assertDeleteTasksExist(userIDToTasksMap map[int64]taskIDToTaskMap, user *commonpb.User, deleteTasks []*commonpb.Task) error {
+	if len(deleteTasks) == 0 {
+		return nil
+	}
+
+	tasksMap, ok := userIDToTasksMap[user.GetId()]
+	if !ok {
+		return grpc.Errorf(codes.InvalidArgument, "User %+v does not exist.", user)
+	}
+	for _, deleteTask := range deleteTasks {
+		if _, ok = tasksMap[deleteTask.GetId()]; !ok {
+			return grpc.Errorf(codes.InvalidArgument, "Task %+v does not exist for user %+v.", deleteTask, user)
+		}
+	}
 	return nil
 }
